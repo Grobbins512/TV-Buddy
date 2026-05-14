@@ -170,6 +170,10 @@ body{font-family:var(--font-body);background:var(--cream);color:var(--ink);font-
       <button class="btn btn-sm btn-primary" onclick="openAddShow('ranked')">+ Add Show</button>
     </div>
   </div>
+  <div class="search-wrap">
+    <span class="search-icon">🔍</span>
+    <input class="search-input" type="text" placeholder="Search rankings..." oninput="filterRankings(this.value)" id="rankingsSearch">
+  </div>
   <div id="rankingsContent"></div>
 </div>
 
@@ -268,8 +272,9 @@ body{font-family:var(--font-body);background:var(--cream);color:var(--ink);font-
           <input class="form-input" id="addShowSeasons" type="number" min="1" value="1">
         </div>
         <div class="form-group">
-          <label class="form-label">Episodes/Season</label>
-          <input class="form-input" id="addShowEpisodes" type="text" placeholder="e.g. 10">
+          <label class="form-label">Episodes per Season</label>
+          <input class="form-input" id="addShowEpisodes" type="text" placeholder="e.g. 10 or 8,10,6,9">
+          <div style="font-size:11px;color:var(--ink-muted);margin-top:3px">One number for all seasons, or comma-separated per season</div>
         </div>
       </div>
       <div class="form-row">
@@ -366,7 +371,7 @@ body{font-family:var(--font-body);background:var(--cream);color:var(--ink);font-
 <div class="modal-backdrop" id="logModal">
   <div class="modal">
     <div class="modal-handle"></div>
-    <div class="modal-title">Log Episode</div>
+    <div class="modal-title">Log Episodes</div>
     <div class="form-group">
       <label class="form-label">Show</label>
       <div class="search-wrap" style="margin-bottom:0">
@@ -377,13 +382,46 @@ body{font-family:var(--font-body);background:var(--cream);color:var(--ink);font-
     </div>
     <div id="logEpisodeFields" style="display:none">
       <div class="form-group">
-        <label class="form-label">Episode</label>
-        <div id="logEpisodeSelect"></div>
+        <label class="form-label">Mode</label>
+        <div style="display:flex;gap:8px;margin-bottom:4px">
+          <button class="eta-type-btn active" id="logModeSingle" onclick="setLogMode('single')">Single</button>
+          <button class="eta-type-btn" id="logModeRange" onclick="setLogMode('range')">Range</button>
+          <button class="eta-type-btn" id="logModeSeason" onclick="setLogMode('season')">Full Season</button>
+        </div>
+      </div>
+      <!-- Single mode -->
+      <div id="logSingleGroup">
+        <div class="form-group">
+          <label class="form-label">Episode</label>
+          <div id="logEpisodeSelect"></div>
+        </div>
+      </div>
+      <!-- Range mode -->
+      <div id="logRangeGroup" style="display:none">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">From</label>
+            <select class="form-select" id="logRangeFrom"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">To</label>
+            <select class="form-select" id="logRangeTo"></select>
+          </div>
+        </div>
+        <div id="logRangePreview" style="font-size:13px;color:var(--rust);margin-top:-6px;margin-bottom:8px"></div>
+      </div>
+      <!-- Full season mode -->
+      <div id="logSeasonGroup" style="display:none">
+        <div class="form-group">
+          <label class="form-label">Season</label>
+          <select class="form-select" id="logSeasonSelect"></select>
+        </div>
+        <div id="logSeasonPreview" style="font-size:13px;color:var(--rust);margin-bottom:8px"></div>
       </div>
       <div class="form-group" style="display:flex;align-items:center;gap:10px">
         <label class="form-label" style="margin:0">Rewatch?</label>
         <input type="checkbox" id="logIsRewatch" style="width:18px;height:18px;accent-color:var(--rust)">
-        <span style="font-size:13px;color:var(--ink-muted)">Check if you've seen this before</span>
+        <span style="font-size:13px;color:var(--ink-muted)">Check if you've seen these before</span>
       </div>
       <div class="form-group">
         <label class="form-label">Date Watched</label>
@@ -392,7 +430,7 @@ body{font-family:var(--font-body);background:var(--cream);color:var(--ink);font-
     </div>
     <div style="display:flex;gap:10px;margin-top:16px">
       <button class="btn" onclick="closeLogModal()" style="flex:1">Cancel</button>
-      <button class="btn btn-primary" onclick="saveLogEntry()" style="flex:2">Log It</button>
+      <button class="btn btn-primary" onclick="saveLogEntry()" style="flex:2" id="logSaveBtn">Log It</button>
     </div>
   </div>
 </div>
@@ -462,6 +500,12 @@ function loadState(){
 }
 function saveState(){localStorage.setItem('tvbuddy_state_v2',JSON.stringify(state));}
 
+// Returns title with asterisk if single-season miniseries not in waiting room
+function showTitle(show){
+  const isMiniseries=parseInt(show.seasons)===1&&!show.waitStatus;
+  return isMiniseries?show.title+'*':show.title;
+}
+
 // ============ API KEY ============
 function getApiKey(){return localStorage.getItem('tvbuddy_api_key')||'';}
 function saveApiKey(key){localStorage.setItem('tvbuddy_api_key',key.trim());}
@@ -498,10 +542,40 @@ function renderPage(name){
 }
 
 // ============ RANKINGS ============
+let rankingsFilter='';
+function filterRankings(val){rankingsFilter=val;renderRankings();}
+
 function renderRankings(){
   const container=document.getElementById('rankingsContent');
+  const filter=rankingsFilter.toLowerCase();
   const ranked=state.shows.filter(s=>s.list==='ranked');
   if(!ranked.length){container.innerHTML=`<div class="empty-state"><div class="empty-state-icon">📺</div><div class="empty-state-text">No ranked shows yet.<br>Add a show to get started.</div></div>`;return;}
+
+  // If filtering, show a flat list across all tiers
+  if(filter){
+    const matches=ranked.filter(s=>
+      s.title.toLowerCase().includes(filter)||
+      (s.cast&&s.cast.join(' ').toLowerCase().includes(filter))||
+      (s.genre&&s.genre.toLowerCase().includes(filter))||
+      (s.tags&&s.tags.join(' ').toLowerCase().includes(filter))
+    );
+    if(!matches.length){container.innerHTML=`<div class="empty-state"><div class="empty-state-icon">🔍</div><div class="empty-state-text">No shows match "${rankingsFilter}"</div></div>`;return;}
+    container.innerHTML=matches.map(show=>{
+      const tier=state.tiers.find(t=>t.id===show.tierId);
+      const lw=getLastWatched(show.id);
+      return`<div class="show-row" onclick="openShowDetail('${show.id}')">
+        <div class="show-poster">${show.posterEmoji||'📺'}</div>
+        <div class="show-info">
+          <div class="show-name">${showTitle(show)}${(show.withSabs||show.watchedWithSabs)?' <span style="font-size:11px;opacity:.7">👫</span>':''}</div>
+          <div class="show-sub">${show.genre||''} ${show.year?'· '+show.year:''}</div>
+          ${show.waitStatus?`<div style="font-size:11px;color:var(--amber)">▶ In Progress</div>`:''}
+          ${lw?`<div style="font-size:11px;color:var(--ink-muted)">Last: ${lw}</div>`:''}
+        </div>
+        ${tier?`<span class="tier-badge" style="background:${tier.color};color:${tier.textColor};font-size:11px">${tier.name}</span>`:''}
+      </div>`;
+    }).join('');
+    return;
+  }
   let html='';
   state.tiers.forEach(tier=>{
     const shows=ranked.filter(s=>s.tierId===tier.id).sort((a,b)=>(a.tierRank||0)-(b.tierRank||0));
@@ -524,7 +598,7 @@ function renderRankings(){
         <span class="show-rank">${idx+1}</span>
         <div class="show-poster">${show.posterEmoji||'📺'}</div>
         <div class="show-info">
-          <div class="show-name">${show.title}${(show.withSabs||show.watchedWithSabs)?' <span style="font-size:11px;opacity:.7">👫</span>':''}</div>
+          <div class="show-name">${showTitle(show)}${(show.withSabs||show.watchedWithSabs)?' <span style="font-size:11px;opacity:.7">👫</span>':''}</div>
           <div class="show-sub">${show.genre||''} ${show.year?'· '+show.year:''}</div>
           ${show.waitStatus==='ongoing'?`<div style="font-size:11px;color:var(--sage);font-weight:500">▶ In Progress</div>`:show.waitStatus?`<div style="font-size:11px;color:var(--amber)">▶ In Progress</div>`:''}
           ${lw?`<div style="font-size:11px;color:var(--ink-muted)">Last: ${lw}</div>`:''}
@@ -600,7 +674,7 @@ function towatchCard(show){
     <div style="display:flex;align-items:center;gap:10px">
       <div class="show-poster" style="width:36px;height:50px;font-size:20px">${show.posterEmoji||'📺'}</div>
       <div style="flex:1">
-        <div class="card-title" style="font-size:15px">${show.title}${sabs?' <span style="font-size:11px;opacity:.7">👫</span>':''}</div>
+        <div class="card-title" style="font-size:15px">${showTitle(show)}${sabs?' <span style="font-size:11px;opacity:.7">👫</span>':''}</div>
         <div class="card-meta">${show.genre||''} ${show.year?'· '+show.year:''}</div>
         ${show.recSource?`<div style="font-size:11px;color:var(--rust)">${show.recSource}</div>`:''}
         ${show.nextSeasonInfo?`<div style="font-size:11px;color:var(--amber)">${show.nextSeasonInfo}</div>`:''}
@@ -692,7 +766,7 @@ function waitingCard(show,groupLabels,groupColors){
       <div class="show-poster" style="width:40px;height:56px;font-size:22px">${show.posterEmoji||'📺'}</div>
       <div style="flex:1;min-width:0">
         <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px;margin-bottom:2px">
-          <div class="card-title" style="cursor:pointer;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" onclick="openShowDetail('${show.id}')">${show.title}</div>
+          <div class="card-title" style="cursor:pointer;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" onclick="openShowDetail('${show.id}')">${showTitle(show)}</div>
           ${gLabel?`<span style="font-size:10px;font-weight:600;color:#fff;background:${gColor};border-radius:10px;padding:1px 7px;white-space:nowrap;flex-shrink:0">${gLabel}</span>`:''}
         </div>
         <div class="card-meta" style="margin-bottom:4px">S${show.currentSeason||'?'} complete ${show.year?'· '+show.year:''}</div>
@@ -762,7 +836,7 @@ function openShowDetail(id){
       <div style="display:flex;align-items:flex-start;gap:14px">
         <div style="font-size:48px">${show.posterEmoji||'📺'}</div>
         <div>
-          <div class="show-detail-title">${show.title}</div>
+          <div class="show-detail-title">${showTitle(show)}</div>
           <div class="show-detail-meta">${show.year||''} ${show.genre?'· '+show.genre:''} ${show.seasons?'· '+show.seasons+' seasons':''}</div>
           ${tier?`<span class="pill" style="background:${tier.color};color:${tier.textColor};margin-top:6px">${tier.name}</span>`:''}
           ${show.list==='towatch'?`<span class="pill" style="background:var(--amber-pale);color:var(--amber);margin-top:6px;margin-left:4px">${show.excitement||'To Watch'}</span>`:''}
@@ -834,7 +908,7 @@ function showDetailTab(tab,showId,btn){
         :null;
       html+=`<div style="padding:10px 0;border-bottom:1px solid var(--border)">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
-          <div style="font-size:14px;font-weight:500;flex:1">Season ${s} <span style="font-size:12px;color:var(--ink-muted);font-weight:400">· ${eps} eps</span></div>
+          <div style="font-size:14px;font-weight:500;flex:1">Season ${s} <span style="font-size:12px;color:var(--ink-muted);font-weight:400">· ${eps||'?'} eps</span></div>
           ${lastWatchedStr?`<span style="font-size:11px;color:var(--ink-muted)">Watched ${lastWatchedStr}</span>`:'<span style="font-size:11px;color:var(--ink-muted);font-style:italic">Not watched</span>'}
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -877,7 +951,7 @@ function getShowProgress(id){
   const seasons=parseInt(show.seasons);
   const epsArr=parseEpisodes(show.episodesPerSeason,seasons);
   for(let s=1;s<=seasons;s++){
-    const eps=parseInt(epsArr[s-1])||10;
+    const eps=parseInt(epsArr[s-1])||null;
     const watched=(state.watchLog||[]).filter(e=>e.showId===id&&e.season===s&&e.episode&&e.episode!==999);
     const maxWatched=watched.length?Math.max(...watched.map(e=>e.episode)):0;
     if(maxWatched<eps)return`S${s}E${maxWatched+1}`;
@@ -886,11 +960,13 @@ function getShowProgress(id){
 }
 
 function parseEpisodes(epStr,seasons){
-  if(!epStr)return Array(seasons).fill(10);
+  if(!epStr||!epStr.toString().trim())return Array(seasons).fill(null); // null = unknown
   const parts=String(epStr).split(',').map(p=>parseInt(p.trim())).filter(n=>!isNaN(n));
+  if(parts.length===0)return Array(seasons).fill(null);
   if(parts.length===1)return Array(seasons).fill(parts[0]);
-  if(parts.length===0)return Array(seasons).fill(10);
-  return parts;
+  // Pad with last value if fewer entries than seasons
+  while(parts.length<seasons)parts.push(parts[parts.length-1]);
+  return parts.slice(0,seasons);
 }
 
 function closeShowDetail(){
@@ -1147,7 +1223,7 @@ async function triggerAIAutofill(title){
       method:'POST',
       headers:apiHeaders(),
       body:JSON.stringify({
-        system:'You are a TV show database. Respond ONLY with a valid JSON object, no markdown. Fields: title(string), description(string, 2 sentences max), seasons(number), episodesPerSeason(string e.g. "10" or "8,10,12"), yearAired(string e.g. "2019-2023"), genre(string, network name), cast(array of 5 actor name strings), emoji(single relevant emoji).',
+        system:'You are a TV show database. Respond ONLY with a valid JSON object, no markdown. Fields: title(string), description(string, 2 sentences max), seasons(number), episodesPerSeason(string — if all seasons have the same count write just that number e.g. "10", if seasons vary write comma-separated per season e.g. "10,13,10,8"), yearAired(string e.g. "2019-2023"), genre(string, network name), cast(array of 5 actor name strings), emoji(single relevant emoji).',
         messages:[{role:'user',content:`Get info for TV show: "${title}"`}]
       })
     });
@@ -1220,14 +1296,16 @@ function selectExistingShow(id){
 }
 
 // ============ LOG EPISODE ============
-let logSelectedShow=null,logSelectedEpisode=null;
+let logSelectedShow=null,logSelectedEpisode=null,logMode='single';
 
 function openLogModal(){
-  logSelectedShow=null;logSelectedEpisode=null;
+  logSelectedShow=null;logSelectedEpisode=null;logMode='single';
   document.getElementById('logShowSearch').value='';
   document.getElementById('logShowResults').innerHTML='';
   document.getElementById('logEpisodeFields').style.display='none';
   document.getElementById('logDate').value=new Date().toISOString().split('T')[0];
+  document.getElementById('logIsRewatch').checked=false;
+  setLogMode('single');
   document.getElementById('logModal').classList.add('open');
 }
 function openLogModalForShow(showId){
@@ -1237,12 +1315,26 @@ function openLogModalForShow(showId){
 }
 function closeLogModal(){document.getElementById('logModal').classList.remove('open');}
 
+function setLogMode(mode){
+  logMode=mode;
+  ['single','range','season'].forEach(m=>{
+    document.getElementById('logMode'+m.charAt(0).toUpperCase()+m.slice(1)).classList.toggle('active',m===mode);
+    document.getElementById('log'+m.charAt(0).toUpperCase()+m.slice(1)+'Group').style.display=m===mode?'block':'none';
+  });
+  const counts={'single':'Log It','range':'Log Range','season':'Log Season'};
+  document.getElementById('logSaveBtn').textContent=counts[mode]||'Log It';
+  if(logSelectedShow){
+    if(mode==='range')populateRangeSelects(logSelectedShow);
+    if(mode==='season')populateSeasonSelect(logSelectedShow);
+  }
+}
+
 function searchShowsForLog(val){
   const results=state.shows.filter(s=>s.list!=='towatch'&&s.title.toLowerCase().includes(val.toLowerCase())).slice(0,8);
   if(!results.length||!val){document.getElementById('logShowResults').innerHTML='';return;}
   document.getElementById('logShowResults').innerHTML=`<div class="search-results">${results.map(s=>{
-    const listTag=s.list==='waiting'?` <span style="font-size:11px;color:var(--ink-muted)">(Waiting)</span>`:'';
-    return`<div class="search-result-item" onclick="selectShowForLog('${s.id}')">${s.posterEmoji||'📺'} ${s.title}${listTag}</div>`;
+    const inProgress=s.waitStatus?` <span style="font-size:11px;color:var(--sage)">(In Progress)</span>`:'';
+    return`<div class="search-result-item" onclick="selectShowForLog('${s.id}')">${s.posterEmoji||'📺'} ${s.title}${inProgress}</div>`;
   }).join('')}</div>`;
 }
 
@@ -1253,6 +1345,8 @@ function selectShowForLog(id){
   document.getElementById('logShowSearch').value=show.title;
   document.getElementById('logEpisodeFields').style.display='block';
   renderNextEpisodeOptions(id);
+  if(logMode==='range')populateRangeSelects(id);
+  if(logMode==='season')populateSeasonSelect(id);
 }
 
 function renderNextEpisodeOptions(showId){
@@ -1262,15 +1356,15 @@ function renderNextEpisodeOptions(showId){
   const container=document.getElementById('logEpisodeSelect');
   let options=[];
   for(let s=1;s<=seasons;s++){
-    const eps=parseInt(epsArr[s-1])||10;
+    const eps=parseInt(epsArr[s-1])||20;
     for(let e=1;e<=eps;e++){
-      const watched=(state.watchLog||[]).find(l=>l.showId===showId&&l.season===s&&l.episode===e);
+      const watched=(state.watchLog||[]).find(l=>l.showId===showId&&l.season===s&&l.episode===e&&!l.isRewatch);
       options.push({s,e,watched:!!watched});
     }
   }
   const nextUnwatched=options.find(o=>!o.watched);
   if(nextUnwatched)logSelectedEpisode={s:nextUnwatched.s,e:nextUnwatched.e};
-  container.innerHTML=options.slice(0,25).map(o=>{
+  container.innerHTML=options.slice(0,30).map(o=>{
     const isNext=nextUnwatched&&o.s===nextUnwatched.s&&o.e===nextUnwatched.e;
     return `<div class="episode-option ${isNext?'selected':''}" onclick="selectEpisode(${o.s},${o.e},this)">
       <span class="episode-option-num">S${o.s}E${o.e}</span>
@@ -1286,20 +1380,148 @@ function selectEpisode(s,e,el){
   logSelectedEpisode={s,e};
 }
 
-function saveLogEntry(){
-  if(!logSelectedShow||!logSelectedEpisode)return alert('Please select a show and episode');
-  const show=state.shows.find(s=>s.id===logSelectedShow);
-  const entry={id:'log_'+Date.now(),showId:logSelectedShow,season:logSelectedEpisode.s,episode:logSelectedEpisode.e,date:document.getElementById('logDate').value,isRewatch:document.getElementById('logIsRewatch').checked};
-  if(!state.watchLog)state.watchLog=[];
-  state.watchLog.push(entry);
-  // Check season complete
+function allEpisodeOptions(showId){
+  const show=state.shows.find(s=>s.id===showId);
   const seasons=parseInt(show.seasons)||1;
   const epsArr=parseEpisodes(show.episodesPerSeason,seasons);
-  const eps=parseInt(epsArr[logSelectedEpisode.s-1])||10;
-  let allWatched=true;
-  for(let e=1;e<=eps;e++){if(!state.watchLog.find(l=>l.showId===logSelectedShow&&l.season===logSelectedEpisode.s&&l.episode===e)){allWatched=false;break;}}
+  let opts=[];
+  for(let s=1;s<=seasons;s++){
+    const eps=parseInt(epsArr[s-1])||20;
+    for(let e=1;e<=eps;e++) opts.push({s,e,label:`S${s}E${e}`});
+  }
+  return opts;
+}
+
+function populateRangeSelects(showId){
+  const opts=allEpisodeOptions(showId);
+  const show=state.shows.find(s=>s.id===showId);
+  const seasons=parseInt(show.seasons)||1;
+  const epsArr=parseEpisodes(show.episodesPerSeason,seasons);
+  // Find next unwatched as default start
+  const nextUnwatched=opts.find(o=>!(state.watchLog||[]).find(l=>l.showId===showId&&l.season===o.s&&l.episode===o.e&&!l.isRewatch));
+  const fromSel=document.getElementById('logRangeFrom');
+  const toSel=document.getElementById('logRangeTo');
+  const html=opts.map(o=>`<option value="${o.s}_${o.e}">${o.label}</option>`).join('');
+  fromSel.innerHTML=html;
+  toSel.innerHTML=html;
+  if(nextUnwatched){
+    fromSel.value=`${nextUnwatched.s}_${nextUnwatched.e}`;
+    // Default to end of that season
+    const endEp=parseInt(epsArr[nextUnwatched.s-1])||null;
+    toSel.value=`${nextUnwatched.s}_${endEp}`;
+  }
+  updateRangePreview();
+  fromSel.onchange=updateRangePreview;
+  toSel.onchange=updateRangePreview;
+}
+
+function updateRangePreview(){
+  const from=document.getElementById('logRangeFrom').value;
+  const to=document.getElementById('logRangeTo').value;
+  if(!from||!to){document.getElementById('logRangePreview').textContent='';return;}
+  const opts=allEpisodeOptions(logSelectedShow);
+  const fi=opts.findIndex(o=>`${o.s}_${o.e}`===from);
+  const ti=opts.findIndex(o=>`${o.s}_${o.e}`===to);
+  if(fi<0||ti<0){document.getElementById('logRangePreview').textContent='';return;}
+  const count=Math.abs(ti-fi)+1;
+  document.getElementById('logRangePreview').textContent=`${count} episode${count!==1?'s':''} will be logged`;
+}
+
+function populateSeasonSelect(showId){
+  const show=state.shows.find(s=>s.id===showId);
+  const seasons=parseInt(show.seasons)||1;
+  const epsArr=parseEpisodes(show.episodesPerSeason,seasons);
+  const sel=document.getElementById('logSeasonSelect');
+  sel.innerHTML=[...Array(seasons)].map((_,i)=>{
+    const eps=parseInt(epsArr[i])||null;
+    return`<option value="${i+1}">Season ${i+1} (${eps} episodes)</option>`;
+  }).join('');
+  updateSeasonPreview();
+  sel.onchange=updateSeasonPreview;
+}
+
+function updateSeasonPreview(){
+  const s=parseInt(document.getElementById('logSeasonSelect').value);
+  const show=state.shows.find(sh=>sh.id===logSelectedShow);
+  const seasons=parseInt(show.seasons)||1;
+  const epsArr=parseEpisodes(show.episodesPerSeason,seasons);
+  const eps=parseInt(epsArr[s-1])||null;
+  const alreadyWatched=(state.watchLog||[]).filter(l=>l.showId===logSelectedShow&&l.season===s&&l.episode!==999&&!l.isRewatch).length;
+  const toLog=eps-alreadyWatched;
+  document.getElementById('logSeasonPreview').textContent=
+    toLog>0?`${toLog} unwatched episode${toLog!==1?'s':''} will be logged (${alreadyWatched} already logged)`
+    :'All episodes already logged';
+}
+
+function saveLogEntry(){
+  if(!logSelectedShow)return alert('Please select a show');
+  if(!state.watchLog)state.watchLog=[];
+  const date=document.getElementById('logDate').value;
+  const isRewatch=document.getElementById('logIsRewatch').checked;
+  const show=state.shows.find(s=>s.id===logSelectedShow);
+
+  let entriesToLog=[];
+
+  if(logMode==='single'){
+    if(!logSelectedEpisode)return alert('Please select an episode');
+    entriesToLog=[logSelectedEpisode];
+  } else if(logMode==='range'){
+    const from=document.getElementById('logRangeFrom').value;
+    const to=document.getElementById('logRangeTo').value;
+    if(!from||!to)return alert('Please select a range');
+    const opts=allEpisodeOptions(logSelectedShow);
+    let fi=opts.findIndex(o=>`${o.s}_${o.e}`===from);
+    let ti=opts.findIndex(o=>`${o.s}_${o.e}`===to);
+    if(fi>ti)[fi,ti]=[ti,fi]; // swap if reversed
+    entriesToLog=opts.slice(fi,ti+1).map(o=>({s:o.s,e:o.e}));
+  } else if(logMode==='season'){
+    const s=parseInt(document.getElementById('logSeasonSelect').value);
+    const seasons=parseInt(show.seasons)||1;
+    const epsArr=parseEpisodes(show.episodesPerSeason,seasons);
+    const eps=parseInt(epsArr[s-1])||20;
+    for(let e=1;e<=eps;e++){
+      const alreadyLogged=state.watchLog.find(l=>l.showId===logSelectedShow&&l.season===s&&l.episode===e&&!l.isRewatch);
+      if(!alreadyLogged||isRewatch) entriesToLog.push({s,e});
+    }
+  }
+
+  if(!entriesToLog.length)return alert('No episodes to log');
+
+  // Add all entries
+  entriesToLog.forEach(({s,e})=>{
+    state.watchLog.push({
+      id:'log_'+Date.now()+'_'+s+'_'+e,
+      showId:logSelectedShow,
+      season:s,episode:e,
+      date,isRewatch,
+    });
+  });
+
+  // Check each season touched for completion
+  const seasonsTouched=[...new Set(entriesToLog.map(e=>e.s))];
+  const completedSeasons=[];
+  const seasons=parseInt(show.seasons)||1;
+  const epsArr=parseEpisodes(show.episodesPerSeason,seasons);
+  seasonsTouched.forEach(s=>{
+    const eps=parseInt(epsArr[s-1])||null;
+    let allWatched=true;
+    for(let e=1;e<=eps;e++){
+      if(!state.watchLog.find(l=>l.showId===logSelectedShow&&l.season===s&&l.episode===e&&!l.isRewatch)){allWatched=false;break;}
+    }
+    if(allWatched)completedSeasons.push(s);
+  });
+
   saveState();closeLogModal();
-  if(allWatched)setTimeout(()=>promptSeasonRating(logSelectedShow,logSelectedEpisode.s),300);
+
+  // Prompt season ratings for completed seasons
+  if(completedSeasons.length){
+    let delay=300;
+    completedSeasons.forEach(s=>{
+      setTimeout(()=>promptSeasonRating(logSelectedShow,s),delay);
+      delay+=200;
+    });
+  }
+
   const curPage=document.querySelector('.nav-tab.active')?.getAttribute('onclick')?.match(/switchPage\('(\w+)'/)?.[1];
   if(curPage)renderPage(curPage);
 }
